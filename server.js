@@ -1,11 +1,11 @@
-// Serveur cloud ESP32-CAM : photo + streaming (MJPEG) + texte dans les 2 sens
+// Serveur cloud ESP32-CAM : photo + streaming (MJPEG) + texte dans les 2 sens + mot de passe modifiable
 const express = require("express");
 const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.API_KEY || "";
-const WEB_PASSWORD = process.env.WEB_PASSWORD || "";
+const API_KEY = process.env.API_KEY || "";            // optionnel : cle pour l'ESP32
+let webPassword = process.env.WEB_PASSWORD || "12345678"; // mot de passe de la page (par defaut 12345678)
 
 // ===== ETAT =====
 let pendingPhoto = false;
@@ -20,18 +20,17 @@ let pendingText = null;   // texte page web -> ESP32
 let messages = [];        // textes ESP32 -> page web
 let msgId = 0;
 
-// ===== SECURITE (optionnelle) =====
+// ===== SECURITE =====
 function deviceAuth(req, res, next) {
   if (!API_KEY || req.get("x-api-key") === API_KEY) return next();
   res.status(401).json({ error: "cle invalide" });
 }
 
 function webAuth(req, res, next) {
-  if (!WEB_PASSWORD) return next();
   const [type, b64] = (req.headers.authorization || "").split(" ");
   if (type === "Basic" && b64) {
     const pass = Buffer.from(b64, "base64").toString().split(":").slice(1).join(":");
-    if (pass === WEB_PASSWORD) return next();
+    if (pass === webPassword) return next();
   }
   res.set("WWW-Authenticate", 'Basic realm="ESP32-CAM"').status(401).send("Mot de passe requis");
 }
@@ -63,7 +62,7 @@ app.post("/api/photo", deviceAuth, rawJpeg, (req, res) => {
 // L'ESP32 envoie une image du streaming
 app.post("/api/frame", deviceAuth, rawJpeg, (req, res) => {
   lastSeen = Date.now();
-  if (Date.now() - streamStart > 10 * 60 * 1000) streaming = false; // 10 min max
+  if (Date.now() - streamStart > 10 * 60 * 1000) streaming = false; // securite : 10 min max
   const buf = req.body;
   if (Buffer.isBuffer(buf) && buf.length > 0) {
     for (const v of viewers) {
@@ -86,7 +85,7 @@ app.post("/api/data", deviceAuth, rawText, (req, res) => {
   res.json({ ok: true });
 });
 
-// ===== ROUTES POUR LA PAGE WEB =====
+// ===== ROUTES POUR LA PAGE WEB (protegees par mot de passe) =====
 app.use(webAuth);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
@@ -105,6 +104,16 @@ app.post("/api/text", (req, res) => {
   const t = String((req.body && req.body.text) || "").trim().slice(0, 200);
   if (!t) return res.status(400).json({ error: "texte vide" });
   pendingText = t;
+  res.json({ ok: true });
+});
+
+// Changer le mot de passe de la page
+app.post("/api/password", (req, res) => {
+  const p = String((req.body && req.body.password) || "").trim();
+  if (p.length < 4 || p.length > 64) {
+    return res.status(400).json({ error: "4 a 64 caracteres" });
+  }
+  webPassword = p;
   res.json({ ok: true });
 });
 
@@ -138,7 +147,7 @@ app.get("/stream", (req, res) => {
   viewers.add(res);
   req.on("close", () => {
     viewers.delete(res);
-    if (viewers.size === 0) streaming = false;
+    if (viewers.size === 0) streaming = false; // plus personne ne regarde
   });
 });
 
