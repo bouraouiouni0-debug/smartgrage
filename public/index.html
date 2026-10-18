@@ -14,17 +14,29 @@
     img { display: block; width: 100%; height: auto; margin-top: 22px; border-radius: 12px; }
     #status { color: #475569; min-height: 24px; }
     #online { font-size: 14px; font-weight: bold; }
-    .hidden { display: none; }
+    .hidden { display: none !important; }
 
-    /* ===== AJOUT : style texte ===== */
     h2 { color: #1565c0; font-size: 20px; margin: 28px 0 10px; }
-    #txt, #newPass { width: 60%; padding: 14px; font-size: 18px; border: 1px solid #cbd5e1; border-radius: 10px; }
-    #txtMsg, #passMsg { display: block; min-height: 24px; color: #475569; margin-top: 6px; }
+    #txt, #newPass, #loginPass { width: 60%; padding: 14px; font-size: 18px; border: 1px solid #cbd5e1; border-radius: 10px; }
+    #loginPass { width: 80%; max-width: 300px; }
+    #txtMsg, #passMsg, #loginMsg { display: block; min-height: 24px; color: #475569; margin-top: 6px; }
+    #loginMsg { color: #c62828; }
     #rxBox { height: 200px; overflow-y: auto; text-align: left; border: 1px solid #cbd5e1; border-radius: 10px; padding: 8px; font-family: monospace; font-size: 15px; background: #f8fafc; }
   </style>
 </head>
 <body>
-  <div class="container">
+  <!-- ===== ECRAN DE CONNEXION (affiche a chaque ouverture / actualisation) ===== -->
+  <div id="login" class="container" style="max-width:420px; margin-top:80px;">
+    <h1>ESP32-CAM</h1>
+    <h2 style="margin-top:10px;">Mot de passe</h2>
+    <input id="loginPass" type="password" autocomplete="off" placeholder="Mot de passe" onkeydown="if(event.key==='Enter') doLogin()">
+    <br>
+    <button id="loginBtn" onclick="doLogin()">Entrer</button>
+    <span id="loginMsg"></span>
+  </div>
+
+  <!-- ===== APPLICATION (cachee tant que le mot de passe n'est pas bon) ===== -->
+  <div id="app" class="container hidden">
     <h1>ESP32-CAM</h1>
     <p id="online">Camera : ...</p>
     <button id="take" onclick="takePhoto()">Take photo</button>
@@ -32,17 +44,14 @@
     <p id="status">Pret</p>
     <img id="view" class="hidden" alt="Image de la camera">
 
-    <!-- ===== AJOUT : envoyer un texte a l'ESP32 ===== -->
     <h2>Envoyer un texte a l'ESP32</h2>
     <input id="txt" type="text" maxlength="200" placeholder="Ecris un mot..." onkeydown="if(event.key==='Enter') sendText()">
     <button id="sendTxt" onclick="sendText()">Envoyer</button>
     <span id="txtMsg"></span>
 
-    <!-- ===== AJOUT : donnees recues de l'ESP32 ===== -->
     <h2>Donnees recues de l'ESP32</h2>
     <div id="rxBox"></div>
 
-    <!-- ===== AJOUT : changer le mot de passe ===== -->
     <h2>Changer le mot de passe</h2>
     <input id="newPass" type="text" maxlength="64" autocomplete="off" placeholder="Nouveau mot de passe" onkeydown="if(event.key==='Enter') changePassword()">
     <button id="passBtn" onclick="changePassword()">Changer</button>
@@ -53,9 +62,41 @@
     const $ = (id) => document.getElementById(id);
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let streaming = false;
+    let token = "";          // garde en memoire seulement : disparait a chaque actualisation
+    $("loginPass").focus();
 
+    // ===== CONNEXION =====
+    async function doLogin() {
+      const password = $("loginPass").value;
+      if (!password) return;
+      $("loginBtn").disabled = true;
+      $("loginMsg").textContent = "";
+      try {
+        const r = await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password }),
+        });
+        if (!r.ok) throw new Error("Mot de passe incorrect");
+        token = (await r.json()).token;
+        $("loginPass").value = "";
+        $("login").classList.add("hidden");
+        $("app").classList.remove("hidden");
+        startApp();
+      } catch (e) {
+        $("loginMsg").textContent = e.message;
+        $("loginPass").select();
+      } finally {
+        $("loginBtn").disabled = false;
+      }
+    }
+
+    // ===== OUTILS =====
     async function api(path, opts) {
+      opts = opts || {};
+      opts.headers = Object.assign({}, opts.headers, { "x-token": token });
       const r = await fetch(path, opts);
+      if (r.status === 401) { location.reload(); throw new Error("Session expiree"); }
       if (!r.ok) throw new Error("Erreur HTTP " + r.status);
       return r;
     }
@@ -68,6 +109,7 @@
     const msg = (t) => ($("status").textContent = t);
     function show(src) { $("view").src = src; $("view").classList.remove("hidden"); }
 
+    // ===== PHOTO =====
     async function takePhoto() {
       $("take").disabled = true;
       try {
@@ -78,7 +120,7 @@
           await sleep(500);
           const s = await getStatus();
           if (s.photoVersion > before) {
-            show("/api/photo/latest?v=" + s.photoVersion);
+            show("/api/photo/latest?v=" + s.photoVersion + "&token=" + token);
             msg("Photo prise avec succes !");
             return;
           }
@@ -91,6 +133,7 @@
       }
     }
 
+    // ===== STREAMING =====
     async function toggleStream() {
       try {
         if (!streaming) {
@@ -100,7 +143,7 @@
           $("stream").classList.add("stop");
           $("take").disabled = true;
           msg("Demarrage du streaming (2 a 3 secondes)...");
-          show("/stream?t=" + Date.now());
+          show("/stream?t=" + Date.now() + "&token=" + token);
         } else {
           await cmd("stream-stop");
           streaming = false;
@@ -116,6 +159,7 @@
       }
     }
 
+    // ===== ETAT EN LIGNE =====
     async function refreshOnline() {
       try {
         const s = await getStatus();
@@ -125,10 +169,8 @@
         $("online").textContent = "Serveur injoignable";
       }
     }
-    refreshOnline();
-    setInterval(refreshOnline, 3000);
 
-    // ===== AJOUT : envoyer un texte a l'ESP32 =====
+    // ===== ENVOYER UN TEXTE A L'ESP32 =====
     async function sendText() {
       const text = $("txt").value.trim();
       if (!text) return;
@@ -148,7 +190,7 @@
       }
     }
 
-    // ===== AJOUT : recevoir les textes de l'ESP32 =====
+    // ===== RECEVOIR LES TEXTES DE L'ESP32 =====
     let lastMsgId = 0;
     async function fetchMessages() {
       try {
@@ -163,9 +205,8 @@
         if (list.length) box.scrollTop = box.scrollHeight;
       } catch (e) {}
     }
-    setInterval(fetchMessages, 1000);
 
-    // ===== AJOUT : changer le mot de passe =====
+    // ===== CHANGER LE MOT DE PASSE =====
     async function changePassword() {
       const password = $("newPass").value.trim();
       if (password.length < 4) {
@@ -179,13 +220,19 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ password }),
         });
-        $("newPass").value = "";
         $("passMsg").textContent = "Mot de passe change. Reconnexion...";
-        setTimeout(() => location.reload(), 1500); // le navigateur redemande le mot de passe
+        setTimeout(() => location.reload(), 1500); // retour a l'ecran de connexion
       } catch (e) {
         $("passMsg").textContent = "Erreur : " + e.message;
         $("passBtn").disabled = false;
       }
+    }
+
+    // ===== DEMARRAGE APRES CONNEXION =====
+    function startApp() {
+      refreshOnline();
+      setInterval(refreshOnline, 3000);
+      setInterval(fetchMessages, 1000);
     }
   </script>
 </body>
