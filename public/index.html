@@ -18,8 +18,8 @@
 
     /* ===== AJOUT : style texte ===== */
     h2 { color: #1565c0; font-size: 20px; margin: 28px 0 10px; }
-    #txt { width: 60%; padding: 14px; font-size: 18px; border: 1px solid #cbd5e1; border-radius: 10px; }
-    #txtMsg { display: block; min-height: 24px; color: #475569; margin-top: 6px; }
+    #txt, #newPass { width: 60%; padding: 14px; font-size: 18px; border: 1px solid #cbd5e1; border-radius: 10px; }
+    #txtMsg, #passMsg { display: block; min-height: 24px; color: #475569; margin-top: 6px; }
     #rxBox { height: 200px; overflow-y: auto; text-align: left; border: 1px solid #cbd5e1; border-radius: 10px; padding: 8px; font-family: monospace; font-size: 15px; background: #f8fafc; }
   </style>
 </head>
@@ -41,6 +41,12 @@
     <!-- ===== AJOUT : donnees recues de l'ESP32 ===== -->
     <h2>Donnees recues de l'ESP32</h2>
     <div id="rxBox"></div>
+
+    <!-- ===== AJOUT : changer le mot de passe ===== -->
+    <h2>Changer le mot de passe</h2>
+    <input id="newPass" type="text" maxlength="64" autocomplete="off" placeholder="Nouveau mot de passe" onkeydown="if(event.key==='Enter') changePassword()">
+    <button id="passBtn" onclick="changePassword()">Changer</button>
+    <span id="passMsg"></span>
   </div>
 
   <script>
@@ -158,6 +164,29 @@
       } catch (e) {}
     }
     setInterval(fetchMessages, 1000);
+
+    // ===== AJOUT : changer le mot de passe =====
+    async function changePassword() {
+      const password = $("newPass").value.trim();
+      if (password.length < 4) {
+        $("passMsg").textContent = "Minimum 4 caracteres";
+        return;
+      }
+      $("passBtn").disabled = true;
+      try {
+        await api("/api/password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password }),
+        });
+        $("newPass").value = "";
+        $("passMsg").textContent = "Mot de passe change. Reconnexion...";
+        setTimeout(() => location.reload(), 1500); // le navigateur redemande le mot de passe
+      } catch (e) {
+        $("passMsg").textContent = "Erreur : " + e.message;
+        $("passBtn").disabled = false;
+      }
+    }
   </script>
 </body>
 </html>
