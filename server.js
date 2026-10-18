@@ -1,11 +1,13 @@
-// Serveur cloud ESP32-CAM : photo + streaming (MJPEG) + texte dans les 2 sens + mot de passe modifiable
+// Serveur cloud ESP32-CAM : photo + streaming (MJPEG) + texte dans les 2 sens
+// + mot de passe demande a chaque ouverture de la page (modifiable depuis la page)
 const express = require("express");
+const crypto = require("crypto");
 const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.API_KEY || "";            // optionnel : cle pour l'ESP32
-let webPassword = process.env.WEB_PASSWORD || "12345678"; // mot de passe de la page (par defaut 12345678)
+const API_KEY = process.env.API_KEY || "";                  // optionnel : cle pour l'ESP32
+let webPassword = process.env.WEB_PASSWORD || "12345678";   // mot de passe de la page (defaut 12345678)
 
 // ===== ETAT =====
 let pendingPhoto = false;
@@ -20,6 +22,8 @@ let pendingText = null;   // texte page web -> ESP32
 let messages = [];        // textes ESP32 -> page web
 let msgId = 0;
 
+const tokens = new Set(); // sessions ouvertes (en memoire : vides a chaque redemarrage)
+
 // ===== SECURITE =====
 function deviceAuth(req, res, next) {
   if (!API_KEY || req.get("x-api-key") === API_KEY) return next();
@@ -27,15 +31,12 @@ function deviceAuth(req, res, next) {
 }
 
 function webAuth(req, res, next) {
-  const [type, b64] = (req.headers.authorization || "").split(" ");
-  if (type === "Basic" && b64) {
-    const pass = Buffer.from(b64, "base64").toString().split(":").slice(1).join(":");
-    if (pass === webPassword) return next();
-  }
-  res.set("WWW-Authenticate", 'Basic realm="ESP32-CAM"').status(401).send("Mot de passe requis");
+  const token = req.get("x-token") || req.query.token;
+  if (token && tokens.has(token)) return next();
+  res.status(401).json({ error: "connexion requise" });
 }
 
-// ===== ROUTES POUR L'ESP32 =====
+// ===== ROUTES POUR L'ESP32 (sans mot de passe de page) =====
 const rawJpeg = express.raw({ type: "image/jpeg", limit: "3mb" });
 const rawText = express.text({ type: "text/plain", limit: "10kb" });
 
@@ -85,10 +86,23 @@ app.post("/api/data", deviceAuth, rawText, (req, res) => {
   res.json({ ok: true });
 });
 
-// ===== ROUTES POUR LA PAGE WEB (protegees par mot de passe) =====
-app.use(webAuth);
+// ===== PAGE WEB + CONNEXION (la page elle-meme est publique, ses donnees non) =====
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
+
+app.post("/api/login", (req, res) => {
+  const p = String((req.body && req.body.password) || "").trim();
+  if (p === webPassword) {
+    const token = crypto.randomBytes(24).toString("hex");
+    tokens.add(token);
+    if (tokens.size > 50) tokens.delete(tokens.values().next().value);
+    return res.json({ token });
+  }
+  setTimeout(() => res.status(401).json({ error: "mot de passe incorrect" }), 1000); // freine les essais
+});
+
+// ===== ROUTES PROTEGEES (jeton obligatoire) =====
+app.use(webAuth);
 
 app.post("/api/command", (req, res) => {
   const cmd = req.body && req.body.cmd;
@@ -107,13 +121,14 @@ app.post("/api/text", (req, res) => {
   res.json({ ok: true });
 });
 
-// Changer le mot de passe de la page
+// Changer le mot de passe (toutes les sessions sont fermees)
 app.post("/api/password", (req, res) => {
   const p = String((req.body && req.body.password) || "").trim();
   if (p.length < 4 || p.length > 64) {
     return res.status(400).json({ error: "4 a 64 caracteres" });
   }
   webPassword = p;
+  tokens.clear();
   res.json({ ok: true });
 });
 
