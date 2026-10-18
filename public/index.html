@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ma camera ESP32-CAM</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #eef2f7; color: #1f2937; text-align: center; padding: 25px 12px; margin: 0; }
+    .container { max-width: 700px; margin: 20px auto; padding: 24px; background: white; border-radius: 18px; box-shadow: 0 5px 20px #00000012; }
+    h1 { color: #1565c0; }
+    button { background: #1565c0; color: white; border: none; padding: 15px 26px; margin: 4px; font-size: 18px; font-weight: bold; border-radius: 10px; cursor: pointer; }
+    button.stop { background: #c62828; }
+    button:disabled { opacity: .6; cursor: wait; }
+    img { display: block; width: 100%; height: auto; margin-top: 22px; border-radius: 12px; }
+    #status { color: #475569; min-height: 24px; }
+    #online { font-size: 14px; font-weight: bold; }
+    .hidden { display: none; }
+
+    /* ===== AJOUT : style texte ===== */
+    h2 { color: #1565c0; font-size: 20px; margin: 28px 0 10px; }
+    #txt { width: 60%; padding: 14px; font-size: 18px; border: 1px solid #cbd5e1; border-radius: 10px; }
+    #txtMsg { display: block; min-height: 24px; color: #475569; margin-top: 6px; }
+    #rxBox { height: 200px; overflow-y: auto; text-align: left; border: 1px solid #cbd5e1; border-radius: 10px; padding: 8px; font-family: monospace; font-size: 15px; background: #f8fafc; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>ESP32-CAM</h1>
+    <p id="online">Camera : ...</p>
+    <button id="take" onclick="takePhoto()">Take photo</button>
+    <button id="stream" onclick="toggleStream()">Take streaming</button>
+    <p id="status">Pret</p>
+    <img id="view" class="hidden" alt="Image de la camera">
+
+    <!-- ===== AJOUT : envoyer un texte a l'ESP32 ===== -->
+    <h2>Envoyer un texte a l'ESP32</h2>
+    <input id="txt" type="text" maxlength="200" placeholder="Ecris un mot..." onkeydown="if(event.key==='Enter') sendText()">
+    <button id="sendTxt" onclick="sendText()">Envoyer</button>
+    <span id="txtMsg"></span>
+
+    <!-- ===== AJOUT : donnees recues de l'ESP32 ===== -->
+    <h2>Donnees recues de l'ESP32</h2>
+    <div id="rxBox"></div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let streaming = false;
+
+    async function api(path, opts) {
+      const r = await fetch(path, opts);
+      if (!r.ok) throw new Error("Erreur HTTP " + r.status);
+      return r;
+    }
+    const getStatus = async () => (await api("/api/status")).json();
+    const cmd = (c) => api("/api/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: c }),
+    });
+    const msg = (t) => ($("status").textContent = t);
+    function show(src) { $("view").src = src; $("view").classList.remove("hidden"); }
+
+    async function takePhoto() {
+      $("take").disabled = true;
+      try {
+        const before = (await getStatus()).photoVersion;
+        await cmd("photo");
+        msg("Capture en cours...");
+        for (let i = 0; i < 30; i++) {
+          await sleep(500);
+          const s = await getStatus();
+          if (s.photoVersion > before) {
+            show("/api/photo/latest?v=" + s.photoVersion);
+            msg("Photo prise avec succes !");
+            return;
+          }
+        }
+        throw new Error("la camera ne repond pas (hors ligne ?)");
+      } catch (e) {
+        msg("Erreur : " + e.message);
+      } finally {
+        $("take").disabled = false;
+      }
+    }
+
+    async function toggleStream() {
+      try {
+        if (!streaming) {
+          await cmd("stream-start");
+          streaming = true;
+          $("stream").textContent = "Stop streaming";
+          $("stream").classList.add("stop");
+          $("take").disabled = true;
+          msg("Demarrage du streaming (2 a 3 secondes)...");
+          show("/stream?t=" + Date.now());
+        } else {
+          await cmd("stream-stop");
+          streaming = false;
+          $("view").removeAttribute("src");
+          $("view").classList.add("hidden");
+          $("stream").textContent = "Take streaming";
+          $("stream").classList.remove("stop");
+          $("take").disabled = false;
+          msg("Streaming arrete.");
+        }
+      } catch (e) {
+        msg("Erreur : " + e.message);
+      }
+    }
+
+    async function refreshOnline() {
+      try {
+        const s = await getStatus();
+        $("online").textContent = s.online ? "Camera : en ligne" : "Camera : hors ligne";
+        $("online").style.color = s.online ? "#2e7d32" : "#c62828";
+      } catch (e) {
+        $("online").textContent = "Serveur injoignable";
+      }
+    }
+    refreshOnline();
+    setInterval(refreshOnline, 3000);
+
+    // ===== AJOUT : envoyer un texte a l'ESP32 =====
+    async function sendText() {
+      const text = $("txt").value.trim();
+      if (!text) return;
+      $("sendTxt").disabled = true;
+      try {
+        await api("/api/text", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        $("txtMsg").textContent = "Envoye : " + text;
+        $("txt").value = "";
+      } catch (e) {
+        $("txtMsg").textContent = "Erreur : " + e.message;
+      } finally {
+        $("sendTxt").disabled = false;
+      }
+    }
+
+    // ===== AJOUT : recevoir les textes de l'ESP32 =====
+    let lastMsgId = 0;
+    async function fetchMessages() {
+      try {
+        const list = await (await api("/api/messages?since=" + lastMsgId)).json();
+        const box = $("rxBox");
+        for (const m of list) {
+          const line = document.createElement("div");
+          line.textContent = new Date(m.time).toLocaleTimeString() + "  " + m.text;
+          box.appendChild(line);
+          lastMsgId = m.id;
+        }
+        if (list.length) box.scrollTop = box.scrollHeight;
+      } catch (e) {}
+    }
+    setInterval(fetchMessages, 1000);
+  </script>
+</body>
+</html>
